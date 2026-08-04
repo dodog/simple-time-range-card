@@ -89,6 +89,11 @@ If you set a start time later than the end time (e.g. 22:00 → 06:00), the card
 - Times are set in 5-minute increments while dragging.
 - The card calls `input_datetime.set_datetime` on both entities as you drag.
 
+## Support
+
+If this extension is helping you in your daily life you can buy me a coffee.    
+[![Buy Me A Coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=☕&slug=dodog&button_colour=FFDD00&font_colour=000000&font_family=Lato&outline_colour=000000&coffee_colour=ffffff)](https://www.buymeacoffee.com/dodog)
+
 ## License
 
 This project is licensed under the GNU General Public License v3.0.
