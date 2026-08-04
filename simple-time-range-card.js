@@ -28,7 +28,7 @@ class SimpleTimeRangeCard extends HTMLElement {
 
   // Sets an entity's time to the given number of minutes-since-midnight via
   // input_datetime.set_datetime — the domain/service used by HA's date/time
-  // helper. TO override it per-entity via config.entity_start_service / config.entity_end_service, e.g.
+  // helper. To override it per-entity via config.entity_start_service / config.entity_end_service, e.g.
   //   entity_start_service: { domain: "some_domain", service: "some_service" }
   setEntityTime(entityId, minutes, overrideKey) {
     const override = this.config[overrideKey];
@@ -44,6 +44,13 @@ class SimpleTimeRangeCard extends HTMLElement {
   getClientX(e) {
     if (e.touches && e.touches.length) return e.touches[0].clientX;
     return e.clientX;
+  }
+
+  // Shortest distance between two minute-of-day values around the 24h
+  // clock face.
+  circularGap(a, b) {
+    const diff = Math.abs(a - b) % 1440;
+    return Math.min(diff, 1440 - diff);
   }
 
   render() {
@@ -87,8 +94,36 @@ class SimpleTimeRangeCard extends HTMLElement {
       Object.assign(this.range.style, {
         position: "absolute",
         height: "100%",
-        background: this.config.bar_foreground || "#4caf50",
-        borderRadius: "10px"
+        background: this.config.bar_foreground || "#4caf50"
+      });
+
+      // Second fill segment, only visible for an overnight range (start
+      // time later than end time). `range` covers start -> midnight and
+      // `rangeWrap` covers midnight -> end, so together they show the
+      // range as wrapping around the edges of the 24h bar instead of
+      // running through the middle.
+      this.rangeWrap = document.createElement("div");
+      Object.assign(this.rangeWrap.style, {
+        position: "absolute",
+        height: "100%",
+        left: "0%",
+        width: "0%",
+        background: this.config.bar_foreground || "#4caf50"
+      });
+
+      // Dashed divider marking midnight, shown only in overnight mode so
+      // it's clear the two fill segments are one continuous range that
+      // wraps, rather than two unrelated selections.
+      this.midnightMarker = document.createElement("div");
+      Object.assign(this.midnightMarker.style, {
+        position: "absolute",
+        top: "0",
+        height: "100%",
+        width: "0",
+        borderLeft: "1.5px dashed rgba(0,0,0,0.35)",
+        display: "none",
+        zIndex: "2",
+        pointerEvents: "none"
       });
 
       const makeHandle = () => {
@@ -143,7 +178,9 @@ class SimpleTimeRangeCard extends HTMLElement {
       this.endLabel = makeLabel();
 
       this.bar.append(
+        this.midnightMarker,
         this.range,
+        this.rangeWrap,
         this.startHandle,
         this.endHandle,
         this.startLabel,
@@ -170,7 +207,7 @@ class SimpleTimeRangeCard extends HTMLElement {
 
         if (
           drag === "start" &&
-          minutes <= dragEndMinutes - this.minGapMinutes &&
+          this.circularGap(minutes, dragEndMinutes) >= this.minGapMinutes &&
           minutes !== lastSentStart
         ) {
           dragStartMinutes = minutes;
@@ -180,7 +217,7 @@ class SimpleTimeRangeCard extends HTMLElement {
 
         if (
           drag === "end" &&
-          minutes >= dragStartMinutes + this.minGapMinutes &&
+          this.circularGap(minutes, dragStartMinutes) >= this.minGapMinutes &&
           minutes !== lastSentEnd
         ) {
           dragEndMinutes = minutes;
@@ -228,22 +265,70 @@ class SimpleTimeRangeCard extends HTMLElement {
       this.endHandle.addEventListener("mousedown", e => start("end", e));
       this.endHandle.addEventListener("touchstart", e => start("end", e), { passive: false });
 
-      this.range.addEventListener("mousedown", e => {
-        const r = this.range.getBoundingClientRect();
-        start(e.clientX < r.left + r.width / 2 ? "start" : "end", e);
-      });
+      // Clicking/tapping either fill segment grabs whichever handle is
+      // physically closer to the tap point. This works uniformly in both
+      // normal mode (where `range` borders both handles) and overnight mode
+      // (where `range` only borders the start handle and `rangeWrap` only
+      // borders the end handle) without needing to know which mode is active.
+      const nearestHandle = (clientX) => {
+        const startRect = this.startHandle.getBoundingClientRect();
+        const endRect = this.endHandle.getBoundingClientRect();
+        const startDist = Math.abs(clientX - (startRect.left + startRect.width / 2));
+        const endDist = Math.abs(clientX - (endRect.left + endRect.width / 2));
+        return startDist < endDist ? "start" : "end";
+      };
 
-      this.range.addEventListener("touchstart", e => {
-        const r = this.range.getBoundingClientRect();
-        start(this.getClientX(e) < r.left + r.width / 2 ? "start" : "end", e);
-      }, { passive: false });
+      const attachRangeDrag = (el) => {
+        el.addEventListener("mousedown", e => start(nearestHandle(e.clientX), e));
+        el.addEventListener(
+          "touchstart",
+          e => start(nearestHandle(this.getClientX(e)), e),
+          { passive: false }
+        );
+      };
+
+      attachRangeDrag(this.range);
+      attachRangeDrag(this.rangeWrap);
     }
 
     const startPct = (startMinutes / 1440) * 100;
     const endPct = (endMinutes / 1440) * 100;
+    const overnight = startMinutes > endMinutes;
 
-    this.range.style.left = `${startPct}%`;
-    this.range.style.width = `${endPct - startPct}%`;
+    if (overnight) {
+      // Split fill: start -> midnight, and midnight -> end. Each segment
+      // is only rounded on the corner that touches the bar's own edge, so
+      // together they read as one continuous shape wrapping around.
+      this.range.style.left = `${startPct}%`;
+      this.range.style.width = `${100 - startPct}%`;
+      Object.assign(this.range.style, {
+        borderTopLeftRadius: "0",
+        borderBottomLeftRadius: "0",
+        borderTopRightRadius: "10px",
+        borderBottomRightRadius: "10px"
+      });
+
+      this.rangeWrap.style.left = "0%";
+      this.rangeWrap.style.width = `${endPct}%`;
+      Object.assign(this.rangeWrap.style, {
+        borderTopRightRadius: "0",
+        borderBottomRightRadius: "0",
+        borderTopLeftRadius: "10px",
+        borderBottomLeftRadius: "10px"
+      });
+
+      this.midnightMarker.style.display = "block";
+      this.midnightMarker.style.left = "0%";
+    } else {
+      this.range.style.left = `${startPct}%`;
+      this.range.style.width = `${endPct - startPct}%`;
+      this.range.style.borderRadius = "10px";
+
+      this.rangeWrap.style.left = "0%";
+      this.rangeWrap.style.width = "0%";
+
+      this.midnightMarker.style.display = "none";
+    }
 
     this.startHandle.style.left = `${startPct}%`;
     this.startHandle.style.transform = "translateX(-50%)";
