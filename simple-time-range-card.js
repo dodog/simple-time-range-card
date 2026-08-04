@@ -35,7 +35,9 @@ class SimpleTimeRangeCard extends HTMLElement {
 
     const startState = this._hass.states[this.config.entity_start]?.state;
     const endState = this._hass.states[this.config.entity_end]?.state;
+    const timePattern = /^\d{2}:\d{2}/;
     if (!startState || !endState) return;
+    if (!timePattern.test(startState) || !timePattern.test(endState)) return;
 
     const startTime = startState.slice(0, 5);
     const endTime = endState.slice(0, 5);
@@ -69,7 +71,6 @@ class SimpleTimeRangeCard extends HTMLElement {
         background: this.config.bar_foreground || "#4caf50",
         borderRadius: "10px"
       });
-      this.bar.appendChild(this.range);
 
       const makeHandle = () => {
         const h = document.createElement("div");
@@ -134,6 +135,11 @@ class SimpleTimeRangeCard extends HTMLElement {
       );
 
       let drag = null;
+      let dragStartMinutes = null;
+      let dragEndMinutes = null;
+      // Last minute value is sent to callService
+      let lastSentStart = null;
+      let lastSentEnd = null;
 
       const move = (e) => {
         if (!drag) return;
@@ -146,21 +152,18 @@ class SimpleTimeRangeCard extends HTMLElement {
         let minutes = Math.round((x / rect.width) * 1440 / 5) * 5;
         minutes = Math.min(minutes, 1439);
 
-        const curStart = this.hhmmToMinutes(
-          this._hass.states[this.config.entity_start].state.slice(0, 5)
-        );
-        const curEnd = this.hhmmToMinutes(
-          this._hass.states[this.config.entity_end].state.slice(0, 5)
-        );
-
-        if (drag === "start" && minutes < curEnd) {
+        if (drag === "start" && minutes < dragEndMinutes && minutes !== lastSentStart) {
+          dragStartMinutes = minutes;
+          lastSentStart = minutes;
           this._hass.callService("input_datetime", "set_datetime", {
             entity_id: this.config.entity_start,
             time: this.minutesToHHMM(minutes)
           });
         }
 
-        if (drag === "end" && minutes > curStart) {
+        if (drag === "end" && minutes > dragStartMinutes && minutes !== lastSentEnd) {
+          dragEndMinutes = minutes;
+          lastSentEnd = minutes;
           this._hass.callService("input_datetime", "set_datetime", {
             entity_id: this.config.entity_end,
             time: this.minutesToHHMM(minutes)
@@ -170,6 +173,10 @@ class SimpleTimeRangeCard extends HTMLElement {
 
       const stop = () => {
         drag = null;
+        dragStartMinutes = null;
+        dragEndMinutes = null;
+        lastSentStart = null;
+        lastSentEnd = null;
         window.removeEventListener("mousemove", move);
         window.removeEventListener("mouseup", stop);
         window.removeEventListener("touchmove", move);
@@ -179,6 +186,18 @@ class SimpleTimeRangeCard extends HTMLElement {
       const start = (mode, e) => {
         e.preventDefault();
         drag = mode;
+
+        // Seed the local drag state from the last known hass state so the
+        // very first move event has something correct to compare against.
+        dragStartMinutes = this.hhmmToMinutes(
+          this._hass.states[this.config.entity_start].state.slice(0, 5)
+        );
+        dragEndMinutes = this.hhmmToMinutes(
+          this._hass.states[this.config.entity_end].state.slice(0, 5)
+        );
+        lastSentStart = dragStartMinutes;
+        lastSentEnd = dragEndMinutes;
+
         window.addEventListener("mousemove", move);
         window.addEventListener("mouseup", stop);
         window.addEventListener("touchmove", move, { passive: false });
@@ -209,7 +228,9 @@ class SimpleTimeRangeCard extends HTMLElement {
     this.range.style.width = `${endPct - startPct}%`;
 
     this.startHandle.style.left = `${startPct}%`;
+    this.startHandle.style.transform = "translateX(-50%)";
     this.endHandle.style.left = `${endPct}%`;
+    this.endHandle.style.transform = "translateX(-50%)";
 
     this.startLabel.textContent = startTime;
     this.endLabel.textContent = endTime;
