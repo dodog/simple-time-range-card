@@ -46,11 +46,31 @@ class SimpleTimeRangeCard extends HTMLElement {
     return e.clientX;
   }
 
-  // Shortest distance between two minute-of-day values around the 24h
-  // clock face.
+  // Shortest distance between two minute-of-day values around the 24h clock face.
   circularGap(a, b) {
     const diff = Math.abs(a - b) % 1440;
     return Math.min(diff, 1440 - diff);
+  }
+
+  // Resolves colorValue (hex, named color, rgb(), var(), anything valid
+  // CSS accepts) via a hidden probe element, then returns a readable
+  // black or white based on its luminance. Used to pick duration-label
+  // text color that contrasts with whatever bar_background/bar_foreground
+  // the user has configured, instead of guessing.
+  getContrastingTextColor(colorValue) {
+    const fallback = "rgba(128, 128, 128, 0.45)";
+    if (!this._colorProbe) return fallback;
+
+    this._colorProbe.style.backgroundColor = colorValue;
+    const resolved = getComputedStyle(this._colorProbe).backgroundColor;
+    const match = resolved.match(/rgba?\(([^)]+)\)/);
+    if (!match) return fallback;
+
+    const [r, g, b] = match[1].split(",").map((s) => parseFloat(s.trim()));
+    if ([r, g, b].some((v) => Number.isNaN(v))) return fallback;
+
+    const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    return luminance > 0.55 ? "rgba(0, 0, 0, 0.45)" : "rgba(255, 255, 255, 0.45)";
   }
 
   render() {
@@ -89,6 +109,33 @@ class SimpleTimeRangeCard extends HTMLElement {
         userSelect: "none"
       });
       this.card.appendChild(this.bar);
+
+      // Invisible element used purely to resolve arbitrary CSS color values
+      // (hex, named colors, var(), etc.) into their computed rgb() so we
+      // can measure luminance for contrast — see getContrastingTextColor.
+      this._colorProbe = document.createElement("div");
+      Object.assign(this._colorProbe.style, {
+        position: "absolute",
+        width: "0",
+        height: "0",
+        overflow: "hidden",
+        visibility: "hidden",
+        pointerEvents: "none"
+      });
+      this.card.appendChild(this._colorProbe);
+
+      // Positioned inside the bar itself. Placement (on the fill vs. in the gap) and
+      // exact position are decided per-render based on available room.
+      this.durationLabel = document.createElement("div");
+      Object.assign(this.durationLabel.style, {
+        position: "absolute",
+        top: "50%",
+        fontSize: "20px",
+        fontWeight: "500",
+        pointerEvents: "none",
+        whiteSpace: "nowrap",
+        zIndex: "2"
+      });
 
       this.range = document.createElement("div");
       Object.assign(this.range.style, {
@@ -181,6 +228,7 @@ class SimpleTimeRangeCard extends HTMLElement {
         this.midnightMarker,
         this.range,
         this.rangeWrap,
+        this.durationLabel,
         this.startHandle,
         this.endHandle,
         this.startLabel,
@@ -335,16 +383,62 @@ class SimpleTimeRangeCard extends HTMLElement {
     this.endHandle.style.left = `${endPct}%`;
     this.endHandle.style.transform = "translateX(-50%)";
 
-    this.startLabel.textContent = startTime;
-    this.endLabel.textContent = endTime;
+    // Labels lean toward each other, into the highlighted span, with small arrows 
+    this.startLabel.textContent = `${startTime} >`;
+    this.endLabel.textContent = `< ${endTime}`;
 
     this.startLabel.style.left = `${startPct}%`;
     this.endLabel.style.left = `${endPct}%`;
 
     this.startLabel.style.top = "-30px";
     this.endLabel.style.top = "calc(100% + 4px)";
-    this.startLabel.style.transform = "translateX(-50%)";
-    this.endLabel.style.transform = "translateX(-50%)";
+    this.startLabel.style.transform = "translateX(4px)";
+    this.endLabel.style.transform = "translateX(calc(-100% - 4px))";
+
+    const durationMinutes = overnight
+      ? 1440 - startMinutes + endMinutes
+      : endMinutes - startMinutes;
+    const durH = Math.floor(durationMinutes / 60);
+    const durM = durationMinutes % 60;
+    let durationText;
+    if (durH > 0 && durM > 0) durationText = `${durH}h ${durM}m`;
+    else if (durH > 0) durationText = `${durH}h`;
+    else durationText = `${durM}m`;
+    this.durationLabel.textContent = durationText;
+
+    // Candidate placements, in bar-percent terms. Overnight has two filled
+    // pieces (start->midnight, midnight->end) and one gap piece between
+    // them; normal mode has one filled piece and up to two gap pieces
+    // (before start, after end).
+    const filledSegments = overnight
+      ? [{ start: startPct, end: 100 }, { start: 0, end: endPct }]
+      : [{ start: startPct, end: endPct }];
+    const gapSegments = overnight
+      ? [{ start: endPct, end: startPct }]
+      : [{ start: 0, end: startPct }, { start: endPct, end: 100 }].filter(
+          (s) => s.end - s.start > 0.01
+        );
+
+    const widest = (segments) =>
+      segments.reduce((a, b) => (b.end - b.start > a.end - a.start ? b : a));
+
+    const primaryFilled = widest(filledSegments);
+    const primaryGap = gapSegments.length ? widest(gapSegments) : null;
+
+    const barWidthPx = this.bar.getBoundingClientRect().width;
+    const textWidthPx = this.durationLabel.getBoundingClientRect().width;
+    const filledWidthPx = ((primaryFilled.end - primaryFilled.start) / 100) * barWidthPx;
+    const fitsInFilled = barWidthPx > 0 && filledWidthPx >= textWidthPx + 16;
+
+    const target = fitsInFilled ? primaryFilled : primaryGap || primaryFilled;
+    const targetMidpoint = (target.start + target.end) / 2;
+    const onFill = target === primaryFilled;
+
+    this.durationLabel.style.left = `${targetMidpoint}%`;
+    this.durationLabel.style.transform = "translate(-50%, -50%)";
+    this.durationLabel.style.color = this.getContrastingTextColor(
+      onFill ? this.config.bar_foreground || "#4caf50" : this.config.bar_background || "#eee"
+    );
   }
 
   getCardSize() {
